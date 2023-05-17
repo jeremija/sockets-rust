@@ -18,7 +18,10 @@ pub enum ClientMessage {
     },
     /// NewStreamResponse is sent when a new tunneled connection has been
     /// establihsed.
-    NewStreamResponse(Result<TunnelledStreamId, String>),
+    NewStreamResponse{
+        id: TunnelledStreamId,
+        result: Result<(), String>,
+    },
     /// Data is sent when data was read from a local connection.
     Data {
         id: TunnelledStreamId,
@@ -84,6 +87,13 @@ impl TunnelId {
     pub fn rand() -> Self {
         Self(Uuid::new_v4())
     }
+
+}
+
+impl std::fmt::Display for TunnelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Copy, Hash, Clone)]
@@ -92,6 +102,12 @@ pub struct StreamId(uuid::Uuid);
 impl StreamId {
     pub fn rand() -> Self {
         Self(Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for StreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 

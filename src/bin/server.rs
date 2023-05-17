@@ -3,7 +3,7 @@ use std::{net::SocketAddr, collections::HashMap};
 use bytes::BytesMut;
 use clap::{command, Parser};
 use anyhow::{anyhow, Result};
-use sockets::{server, protocol::{Message, self}, message::{ClientMessage, ServerMessage, ExposeResponse, StreamKind, TunnelId, StreamId, StreamSide, TunnelledStreamId}};
+use sockets::{server, protocol::Message, message::{ClientMessage, ServerMessage, ExposeResponse, StreamKind, TunnelId, StreamId, StreamSide, TunnelledStreamId}};
 use tokio::{net::{TcpListener, TcpStream}, select, sync::mpsc, io::{WriteHalf, ReadHalf, AsyncWriteExt}};
 use tokio_tungstenite::MaybeTlsStream;
 use tokio::io::AsyncReadExt;
@@ -11,12 +11,11 @@ use tokio::io::AsyncReadExt;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Name of the person to greet
-    #[arg(short, long, default_value = "localhost")]
+    #[arg(long, default_value = "localhost")]
     hostname: String,
 
     #[arg(
-        short, long,
+        long,
         help = "Bind args for webserver socket",
         default_value = "127.0.0.1:3000"
     ) ]
@@ -31,11 +30,13 @@ async fn main() -> Result<()> {
 
     loop {
         let (stream, _addr) = listener.accept().await?;
+        let hostname = args.hostname.clone();
 
         tokio::spawn(async move {
+            // TODO add TLS support.
             let stream = MaybeTlsStream::Plain(stream);
 
-            match handle_stream(stream).await {
+            match handle_stream(stream, hostname).await {
                 Ok(()) => {},
                 Err(err) => {
                     eprintln!("error: {:?}", err);
@@ -46,7 +47,10 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
+async fn handle_stream(
+    stream: MaybeTlsStream<TcpStream>,
+    hostname: String,
+) -> Result<()> {
     let ws_stream = tokio_tungstenite::accept_async(stream).await?;
 
     let (tx, mut rx) = server::from_stream(ws_stream).await?;
@@ -54,9 +58,14 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
     let (stream_tx, mut stream_rx) = mpsc::channel::<(WritableStream, ReadableStream)>(16);
     let (read_done_tx, mut read_done_rx) = mpsc::channel::<TunnelledStreamId>(16);
 
+    // TODO check if we keep some entries for too long here.
+    // FIXME sometimes when the connection is done, the writable stays here
+    // so we only remove an entry on a failed write. Need to figure out how to
+    // do this properly.
     let mut writables = HashMap::new();
     let mut cancels = HashMap::new();
 
+    // FIXME a lot of code duplication between server and client.
     loop {
         select! {
             conn = stream_rx.recv() => {
@@ -111,7 +120,7 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
                 match c {
                     ClientMessage::ExposeRequest { kind } => {
                         if kind != StreamKind::Tcp {
-                            tx.send(protocol::Message::Message(ServerMessage::ExposeResponse(
+                            tx.send(Message::Message(ServerMessage::ExposeResponse(
                                 Err("only tcp is supported".to_string()),
                             ))).await?;
                             continue
@@ -132,18 +141,18 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
                                     }
                                 });
 
-                                tx.send(protocol::Message::Message(ServerMessage::ExposeResponse(
+                                tx.send(Message::Message(ServerMessage::ExposeResponse(
                                     Ok(
                                         ExposeResponse{
                                             tunnel_id,
-                                            url: format!("{}:{}", "localhost:", port),
+                                            url: format!("{}:{}", hostname, port),
                                         },
                                     )
                                 ))).await?;
                             },
                             Err(err) => {
                                 eprintln!("failed to create server listener: {:?}", err);
-                                tx.send(protocol::Message::Message(ServerMessage::ExposeResponse(
+                                tx.send(Message::Message(ServerMessage::ExposeResponse(
                                     Err("failed to create server listener".to_string()),
                                 ))).await?;
                             },
@@ -161,8 +170,16 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
                             keep
                         });
                     },
-                    ClientMessage::NewStreamResponse(result) => {
-                        eprintln!("new stream {:?}", result);
+                    ClientMessage::NewStreamResponse{ id, result } => {
+                        eprintln!("new stream response {:?}", result);
+
+                        if let Err(_) = result {
+                            writables.remove(&id);
+
+                            if let Some(s) = cancels.remove(&id) {
+                                s.cancel();
+                            }
+                        }
                     },
                     ClientMessage::Data { id, bytes } => {
                         let w = writables.get_mut(&id);
@@ -183,7 +200,7 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
 
                                 writables.remove(&id);
 
-                                tx.send(protocol::Message::Message(ServerMessage::StreamClosed {
+                                tx.send(Message::Message(ServerMessage::StreamClosed {
                                     id,
                                     side: StreamSide::Write,
                                 })).await?;
@@ -193,6 +210,7 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
                         }
                     },
                     ClientMessage::StreamClosed {id, side } => {
+                        eprintln!("client server stream closed: {:?}, side: {:?}", id, side);
                         // When the client has closed the read side, it means there will be no more
                         // writes, so we can remove our writable.
                         if side == StreamSide::Read {
@@ -220,7 +238,7 @@ async fn handle_stream(stream: MaybeTlsStream<TcpStream>) -> Result<()> {
                     c.cancel()
                 }
 
-                let msg = protocol::Message::Message(
+                let msg = Message::Message(
                     ServerMessage::StreamClosed{
                         id,
                         side: StreamSide::Read,
@@ -253,7 +271,7 @@ async fn tcp_read_loop(
     cancel: tokio_util::sync::CancellationToken,
     tx: &mpsc::Sender<Message<ServerMessage>>,
 ) -> Result<()> {
-    let msg = protocol::Message::Message(
+    let msg = Message::Message(
         ServerMessage::NewStreamRequest(
             TunnelledStreamId{
                 tunnel_id: readable.id.tunnel_id,
@@ -273,16 +291,6 @@ async fn tcp_read_loop(
             result = readable.rx.read_buf(&mut buf) => {
                 n = match result {
                     Ok(0) => {
-                        // let msg = protocol::Message::Message(
-                        //     ServerMessage::StreamClosed{
-                        //         id: readable.id,
-                        //         side: StreamSide::Read,
-                        //     },
-                        // );
-
-                        // _ = tx.send(msg).await;
-
-                        // Connection closed.
                         return Ok(());
                     },
                     Ok(n) => n,
@@ -298,7 +306,7 @@ async fn tcp_read_loop(
 
         let bytes = Vec::from(&buf[..n]);
 
-        let msg = protocol::Message::Message(
+        let msg = Message::Message(
             ServerMessage::Data{
                 id: readable.id,
                 bytes,
