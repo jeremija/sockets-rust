@@ -1,14 +1,31 @@
+use std::net::SocketAddr;
+
 use futures::{SinkExt, StreamExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+// use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
+use clap::Parser;
+
 use anyhow::Result;
+
+/// Simple program to greet a person
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Name of the person to greet
+    #[arg(short, long, default_value = "ws://localhost:3000/socket")]
+    server_url: Url,
+
+    #[arg(short, long, help = "Local socket to expose, for example 127.0.0.1:22")]
+    expose: SocketAddr,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let url = Url::parse("ws://localhost:3000/socket").unwrap();
-    let (mut ws_stream, response) = connect_async(url).await?;
+    let args = Args::parse();
+
+    let (ws_stream, response) = connect_async(args.server_url).await?;
 
     println!("Connected to the server");
     println!("Response HTTP code: {}", response.status());
