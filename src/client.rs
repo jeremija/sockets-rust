@@ -1,7 +1,7 @@
 use anyhow::Result;
-use futures::stream::{SplitSink, SplitStream};
+use futures::stream::SplitSink;
 use tokio::net::TcpStream;
-use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, tungstenite::{protocol::Message, Error}};
+use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream, tungstenite::protocol::Message};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
@@ -10,7 +10,13 @@ use crate::message::{ClientMessage, ServerMessage};
 type Sender = mpsc::Sender<ClientMessage>;
 type Receiver = mpsc::Receiver<ServerMessage>;
 
-pub async fn split_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) -> (Sender, Receiver) {
+pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
+    let (ws_stream, response) = connect_async(server_url).await?;
+
+    for (ref header, _value) in response.headers() {
+        eprintln!("* {}", header);
+    }
+
     let (mut tx, mut rx) = ws_stream.split();
 
     let (mut server_msg_tx, server_msg_rx) = mpsc::channel::<ServerMessage>(16);
@@ -40,20 +46,9 @@ pub async fn split_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>)
                 }
             }
         }
-        // while let Some(msg) = rx.next().await {
-        //     let msg = msg.map_err(anyhow::Error::msg);
-
-        //     match process_server_message(&mut server_msg_tx, msg).await {
-        //         Ok(()) => continue,
-        //         Err(err) => {
-        //             eprintln!("error processing message: {:?}", err);
-        //             return
-        //         }
-        //     }
-        // }
     });
 
-    (client_msg_tx, server_msg_rx)
+    Ok((client_msg_tx, server_msg_rx))
 }
 
 fn parse_server_message(msg: Result<Message>) -> Result<Option<ServerMessage>> {
