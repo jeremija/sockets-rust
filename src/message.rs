@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::base64;
 
@@ -17,16 +18,16 @@ pub enum ClientMessage {
     },
     /// NewStreamResponse is sent when a new tunneled connection has been
     /// establihsed.
-    NewStreamResponse(Result<StreamId, String>),
+    NewStreamResponse(Result<TunnelledStreamId, String>),
     /// Data is sent when data was read from a local connection.
     Data {
-        stream_id: StreamId,
+        id: TunnelledStreamId,
         #[serde(with = "base64")]
         bytes: Vec<u8>,
     },
     /// StreamClosed is sent when the local connection has closed.
     StreamClosed {
-        stream_id: StreamId,
+        id: TunnelledStreamId,
         side: StreamSide,
     },
 }
@@ -35,31 +36,31 @@ pub enum ClientMessage {
 #[serde(tag = "type")]
 pub enum ServerMessage{
     /// ExposeResponse is sent after a tunnel has been established.
-    ExposeResponse {
-        tunnel_id: TunnelId,
-        url: String,
-    },
+    ExposeResponse(Result<ExposeResponse, String>),
     /// UnexposeResponse is sent after a tunnel has been removed.
     UnexposeResponse {
         tunnel_id: TunnelId,
     },
     /// NewStreamRequest is sent when a new remote stream wants to connect to
     /// an exposed connection.
-    NewStreamRequest {
-        tunnel_id: TunnelId,
-        stream_id: StreamId,
-    },
+    NewStreamRequest(TunnelledStreamId),
     /// Data contains the data received from teh remote stream.
     Data {
-        stream_id: StreamId,
+        id: TunnelledStreamId,
         #[serde(with = "base64")]
         bytes: Vec<u8>,
     },
     /// StreamClosed is sent when the remote stream has terminated.
     StreamClosed {
-        stream_id: StreamId,
+        id: TunnelledStreamId,
         side: StreamSide,
     },
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
+pub struct ExposeResponse {
+    pub tunnel_id: TunnelId,
+    pub url: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Copy, Clone)]
@@ -73,17 +74,38 @@ pub enum StreamKind {
 pub enum StreamSide {
     Read,
     Write,
-    Both,
+    // Both,
 }
 
-pub type TunnelId = uuid::Uuid;
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Copy, Hash, Clone)]
+pub struct TunnelId(uuid::Uuid);
 
-pub type StreamId = uuid::Uuid;
+impl TunnelId {
+    pub fn rand() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Copy, Hash, Clone)]
+pub struct StreamId(uuid::Uuid);
+
+impl StreamId {
+    pub fn rand() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy, Hash, Eq)]
+pub struct TunnelledStreamId {
+    pub tunnel_id: TunnelId,
+    pub stream_id: StreamId,
+}
 
 #[cfg(test)]
 mod tests {
+    use crate::message::{ExposeResponse, TunnelId};
+
     use super::{ClientMessage, ServerMessage, StreamKind};
-    use uuid::Uuid;
 
     #[test]
     fn serde_json_client_message() {
@@ -102,10 +124,14 @@ mod tests {
 
     #[test]
     fn serde_json_server_message() {
-        let msg = ServerMessage::ExposeResponse{
-            url: "tcp.test.com:52131".to_string(),
-            tunnel_id: Uuid::new_v4(),
-        };
+        let msg = ServerMessage::ExposeResponse(
+            Ok(
+                ExposeResponse{
+                    url: "tcp.test.com:52131".to_string(),
+                    tunnel_id: TunnelId::rand(),
+                },
+            ),
+        );
 
         let json = serde_json::to_value(msg.clone())
             .expect("failed to serialize json");

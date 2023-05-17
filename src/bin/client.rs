@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use futures::{SinkExt, StreamExt};
-// use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
@@ -9,7 +8,6 @@ use clap::Parser;
 
 use anyhow::Result;
 
-/// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {

@@ -5,29 +5,30 @@ use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream, tungsten
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::message::{ClientMessage, ServerMessage};
+use crate::{message::{ClientMessage, ServerMessage}, protocol::{self, deserialize, serialize}};
 
-type Sender = mpsc::Sender<ClientMessage>;
-type Receiver = mpsc::Receiver<ServerMessage>;
+type Sender = mpsc::Sender<protocol::Message<ClientMessage>>;
+type Receiver = mpsc::Receiver<protocol::Message<ServerMessage>>;
 
 pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
     let (ws_stream, response) = connect_async(server_url).await?;
 
     for (ref header, _value) in response.headers() {
-        eprintln!("* {}", header);
+        eprintln!("header * {}", header);
     }
 
     let (mut tx, mut rx) = ws_stream.split();
 
-    let (mut server_msg_tx, server_msg_rx) = mpsc::channel::<ServerMessage>(16);
-    let (client_msg_tx, mut client_msg_rx) = mpsc::channel::<ClientMessage>(16);
+    let (mut server_msg_tx, server_msg_rx) = mpsc::channel::<protocol::Message<ServerMessage>>(16);
+    let (client_msg_tx, mut client_msg_rx) = mpsc::channel::<protocol::Message<ClientMessage>>(16);
 
     tokio::spawn(async move {
         while let Some(msg) = rx.next().await {
             let msg = msg.map_err(anyhow::Error::msg);
 
             match recv_server_message(&mut server_msg_tx, msg).await {
-                Ok(()) => continue,
+                Ok(Some(_)) => continue,
+                Ok(None) => return,
                 Err(err) => {
                     eprintln!("error receiving server message: {:?}", err);
                     return
@@ -51,45 +52,26 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
     Ok((client_msg_tx, server_msg_rx))
 }
 
-fn parse_server_message(msg: Result<Message>) -> Result<Option<ServerMessage>> {
-    let msg = msg?;
-
-    let json: Vec<u8>;
+async fn recv_server_message(
+    tx: &mut mpsc::Sender<protocol::Message<ServerMessage>>,
+    msg: Result<Message>,
+) -> Result<Option<()>> {
+    let msg: Option<protocol::Message<ServerMessage>> = deserialize(msg)?;
 
     match msg {
-    Message::Binary(b) => {
-        json = b
-    },
-    Message::Ping(_) => return Ok(None),
-    Message::Pong(_) => return Ok(None),
-    Message::Text(_) => return Ok(None),
-    Message::Close(_msg) => return Ok(None),
-    Message::Frame(_msg) => unreachable!(),
+        Some(val) => {
+            tx.send(val).await?;
+            Ok(Some(()))
+        }
+        None => Ok(None)
     }
-
-    let srv_msg: ServerMessage = serde_json::from_slice(json.as_slice())?;
-
-    Ok(Some(srv_msg))
-}
-
-async fn recv_server_message(
-    tx: &mut mpsc::Sender<ServerMessage>,
-    msg: Result<Message>,
-) -> Result<()> {
-    let srv_msg = parse_server_message(msg)?;
-
-    if let Some(val) = srv_msg {
-        tx.send(val).await?;
-    }
-
-    Ok(())
 }
 
 async fn send_client_message(
     tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    msg: ClientMessage,
+    msg: protocol::Message<ClientMessage>,
     ) -> Result<()> {
-    let json = serde_json::to_vec(&msg)?;
-    tx.send(Message::Binary(json)).await?;
+    let msg = serialize(msg)?;
+    tx.send(msg).await?;
     Ok(())
 }
