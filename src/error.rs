@@ -13,6 +13,12 @@ pub enum Error {
 
     #[error("IOError")]
     IOError(#[from] std::io::Error),
+
+    #[error("no TLS certificates loaded")]
+    NoTlsCertificates,
+
+    #[error("no TLS certificate keys loaded")]
+    NoTlsCertificateKeys,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

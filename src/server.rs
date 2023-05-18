@@ -4,13 +4,13 @@ use anyhow::Result;
 use bytes::BytesMut;
 use futures::stream::SplitSink;
 use tokio::{net::{TcpStream, TcpListener}, select};
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WSMessage, MaybeTlsStream};
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WSMessage};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use log::{error, info};
 use tokio_util::sync::CancellationToken;
 
-use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKind, TunnelId, ExposeResponse, StreamSide}, protocol::{serialize, deserialize, Message}, auth::Authenticator, tcp::{WritableStream, ReadableStream, Listener}, error::Error};
+use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKind, TunnelId, ExposeResponse, StreamSide}, protocol::{serialize, deserialize, Message}, auth::Authenticator, tcp::{WritableStream, ReadableStream, Listener}, error::Error, tls::MaybeTlsStream};
 
 type Sender = mpsc::Sender<Message<ServerMessage>>;
 type Receiver = mpsc::Receiver<Message<ClientMessage>>;
