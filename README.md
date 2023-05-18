@@ -12,6 +12,10 @@ The server and clients both supports TLS. The client can be built with
 `--features insecure` to skip certificate validation, which is useful for
 testing.
 
+There is a rudimentary method of authentication using a pre-shared API key.
+The two relevant varaibles are `SOCKETS_SINGLE_API_KEY` for the server and
+`SOCKETS_API_KEY` for the client.
+
 Sample usage:
 
 ```console
