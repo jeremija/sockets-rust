@@ -3,7 +3,7 @@ use clap::{command, Parser};
 use anyhow::Result;
 use env_logger::Env;
 use log::{info, error};
-use sockets::{server::handle_stream, auth::{Authenticator, SingleKeyAuthenticator}, tls::{load_certs, load_keys, MaybeTlsStream}, error::Error};
+use sockets::{server::handle_stream, auth::{Authenticator, SingleKeyAuthenticator}, tls::{load_server_certs, load_server_keys, MaybeTlsStream}, error::Error};
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, TlsAcceptor};
 use tokio_util::sync::CancellationToken;
@@ -44,8 +44,8 @@ async fn main() -> Result<()> {
     let mut tls_acceptor = None;
 
     if let (Some(cert), Some(cert_key)) = (args.cert, args.cert_key) {
-        let certs = load_certs(&cert)?;
-        let mut keys = load_keys(&cert_key)?;
+        let certs = load_server_certs(&cert)?;
+        let mut keys = load_server_keys(&cert_key)?;
 
         if certs.len() == 0 {
             return Err(Error::NoTlsCertificates.into());

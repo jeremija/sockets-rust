@@ -4,13 +4,15 @@ use rustls_pemfile::{certs, read_one, Item};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::rustls::{Certificate, PrivateKey};
 
-pub fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
+/// Loads server certificates from path.
+pub fn load_server_certs(path: &Path) -> io::Result<Vec<Certificate>> {
     certs(&mut BufReader::new(File::open(path)?))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
         .map(|mut certs| certs.drain(..).map(Certificate).collect())
 }
 
-pub fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
+/// Loads server certificate keys from path.
+pub fn load_server_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
     let mut reader = BufReader::new(File::open(path)?);
 
     let mut keys = Vec::new();
@@ -105,8 +107,14 @@ mod danger {
 }
 
 #[cfg(feature = "insecure")]
+/// new_client_config returns a configuration with custom certificate verifier that will not
+/// validate server certificates.
 pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
     use std::sync::Arc;
+
+    use log::warn;
+
+    warn!("Using insecure TLS config");
 
     let config = rustls::ClientConfig::builder()
         .with_safe_defaults()
@@ -117,6 +125,7 @@ pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
 }
 
 #[cfg(not(feature = "insecure"))]
+/// new_client_config returns None to use the default configuration.
 pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
     None
 }

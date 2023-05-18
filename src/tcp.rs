@@ -122,13 +122,24 @@ impl Listener {
     }
 }
 
+/// Dial dials a TCP ssocket
 pub async fn dial(
     id: TunnelledStreamId,
     addr: SocketAddr,
     cancel: CancellationToken,
 ) -> Result<(WritableStream, ReadableStream)> {
+    let socket: TcpSocket;
+
+    if addr.is_ipv4() {
+        socket = TcpSocket::new_v4()?
+    } else if addr.is_ipv6() {
+        socket = TcpSocket::new_v6()?
+    } else {
+        return Err(Error::InvalidSocketAddress.into());
+    }
+
     let tcp_stream = select!{
-        res = TcpSocket::new_v4()?.connect(addr) => res.map_err(Error::IOError),
+        res = socket.connect(addr) => res.map_err(Error::IOError),
         _ = cancel.cancelled() => Err(Error::Canceled.into()),
     };
 

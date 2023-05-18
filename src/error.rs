@@ -19,6 +19,9 @@ pub enum Error {
 
     #[error("no TLS certificate keys loaded")]
     NoTlsCertificateKeys,
+
+    #[error("invalid socket address")]
+    InvalidSocketAddress,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

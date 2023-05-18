@@ -16,6 +16,8 @@ use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKin
 type Sender = mpsc::Sender<Message<ClientMessage>>;
 type Receiver = mpsc::Receiver<Message<ServerMessage>>;
 
+/// Dials a new websocket connection and returns channels for interacting
+/// with it.
 pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
     let connector = match new_client_config() {
         None => None,
@@ -64,6 +66,7 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
     Ok((client_msg_tx, server_msg_rx))
 }
 
+/// Read and decode the server message.
 async fn recv_server_message(
     tx: &mut mpsc::Sender<Message<ServerMessage>>,
     msg: Result<WSMessage>,
@@ -79,6 +82,8 @@ async fn recv_server_message(
     }
 }
 
+
+/// Encode and send server message.
 async fn send_client_message(
     tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WSMessage>,
     msg: Message<ClientMessage>,
@@ -88,6 +93,7 @@ async fn send_client_message(
     Ok(())
 }
 
+/// Init connects to the server, exposes the local sockets and starts the main loop.
 pub async fn init(
     api_key: String,
     server_url: Url,

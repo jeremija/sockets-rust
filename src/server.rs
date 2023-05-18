@@ -15,6 +15,7 @@ use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKin
 type Sender = mpsc::Sender<Message<ServerMessage>>;
 type Receiver = mpsc::Receiver<Message<ClientMessage>>;
 
+/// Creates Sender/Receiver pairs from a websocket stream.
 pub async fn from_stream(
     ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     addr: std::net::SocketAddr,
@@ -57,6 +58,7 @@ pub async fn from_stream(
     Ok((server_msg_tx, client_msg_rx))
 }
 
+/// Receives and decodes a server message.
 async fn recv_client_message(
     tx: &mut mpsc::Sender<Message<ClientMessage>>,
     msg: Result<WSMessage>,
@@ -72,6 +74,7 @@ async fn recv_client_message(
     }
 }
 
+/// Encodes and sends a server message.
 async fn send_server_message(
     tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WSMessage>,
     msg: Message<ServerMessage>,
@@ -81,6 +84,7 @@ async fn send_server_message(
     Ok(())
 }
 
+/// Handles a new TCP stream until an error or until it is cancelled.
 pub async fn handle_stream(
     cancel: CancellationToken,
     authenticator: Arc<dyn Authenticator>,
