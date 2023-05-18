@@ -8,6 +8,10 @@ by using a centralized service.
 Currently only raw TCP connections are supported, but there's no reason why
 HTTP(s) or WebSocket connections should not be supported.
 
+The server and clients both supports TLS. The client can be built with
+`--features insecure` to skip certificate validation, which is useful for
+testing.
+
 Sample usage:
 
 ```console
@@ -63,6 +67,23 @@ Escape character is '^]'.
 test1
 test2
 ```
+
+# Known Limitations
+
+- Currently JSON serialization is used for sending bytes through the tunnel,
+  which is simple but inneficient.
+
+- A new buffer on every read from the TCP sockets. This also happens internally
+  in tungstenite, and perhaps if we know we'll never exceed a certain message
+  size, perhaps a custom protocol would be better suited.
+
+  In that case we should try to stream the bytes directly after demultiplexing
+  to reduce the need for internal buffering, but that might be tricky to
+  implement.
+
+- It's tricky to figure out if a write side of a socket was closed without
+  writing to it in Tokio. There is a `ready()` method which can be used, but I
+  haven't had the time to look into it yet.
 
 # License
 
