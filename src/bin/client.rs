@@ -2,7 +2,7 @@ use std::{net::SocketAddr, env};
 
 use anyhow::Result;
 use env_logger::Env;
-use sockets::client::dial_and_start;
+use sockets::client::init;
 use url::Url;
 
 use clap::Parser;
@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    dial_and_start(
+    init(
         api_key,
         args.server_url,
         args.expose,

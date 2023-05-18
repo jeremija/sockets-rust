@@ -78,7 +78,7 @@ async fn send_client_message(
     Ok(())
 }
 
-pub async fn dial_and_start(
+pub async fn init(
     api_key: String,
     server_url: Url,
     expose: Vec<SocketAddr>,
