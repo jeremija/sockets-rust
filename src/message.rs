@@ -130,6 +130,7 @@ mod tests {
     #[test]
     fn serde_json_client_message() {
         let msg = ClientMessage::ExposeRequest{
+            local_id: 123,
             kind: StreamKind::Tcp,
         };
 
@@ -147,6 +148,7 @@ mod tests {
         let msg = ServerMessage::ExposeResponse(
             Ok(
                 ExposeResponse{
+                    local_id: 123,
                     url: "tcp.test.com:52131".to_string(),
                     tunnel_id: TunnelId::rand(),
                 },

@@ -104,8 +104,14 @@ pub async fn handle_stream(
     // FIXME sometimes when the connection is done, the writable stays here
     // so we only remove an entry on a failed write. Need to figure out how to
     // do this properly.
-    let mut writables = HashMap::new();
-    let mut cancels = HashMap::new();
+
+
+    // pending_streams contains incoming connections for which we haven't received
+    // NewStreamResponse from the client yet.
+    let mut pending_streams: HashMap<TunnelledStreamId, (WritableStream, ReadableStream)> = HashMap::new();
+    let mut writables: HashMap<TunnelledStreamId, WritableStream> = HashMap::new();
+    let mut cancels: HashMap<TunnelledStreamId, CancellationToken> = HashMap::new();
+
 
     let auth_needed = authenticator.auth_needed();
     let mut authorized = false;
@@ -113,46 +119,27 @@ pub async fn handle_stream(
     // FIXME a lot of code duplication between server and client.
     loop {
         select! {
+            _ = cancel.cancelled() => {
+                return Err(Error::Canceled.into());
+            }
             conn = stream_rx.recv() => {
-                let writable;
-                let mut readable;
-
-                match conn {
+                let (writable, readable) = match conn {
                     None => {
                         error!("stream_rx.recv() returned None: {:?}", addr);
                         continue
                     }
-                    Some((w, r)) => {
-                        writable = w;
-                        readable = r;
-                    },
-                }
+                    Some((w, r)) => (w, r),
+                };
 
                 let id = writable.id();
-                let cancel = readable.cancellation_token();
 
-                writables.insert(id, writable);
-                cancels.insert(id, cancel);
+                pending_streams.insert(id, (writable, readable));
 
-                let tx2 = tx.clone();
-                let read_done_tx2 = read_done_tx.clone();
+                let msg = Message::Message(
+                    ServerMessage::NewStreamRequest(id),
+                );
 
-                tokio::spawn(async move {
-                    match tcp_read_loop(&mut readable, &tx2).await {
-                        Ok(_) => {
-                            info!("read stream closed gracefully {:?}", id)
-                        }
-                        Err(err) => {
-                            error!("read stream closed: {:?} {:?}", id, err)
-                        }
-                    }
-
-                    match read_done_tx2.send(id).await {
-                        Ok(_) => {},
-                        Err(err) => error!("sending read done: {:?} {:?}", id, err),
-                    }
-                });
-
+                tx.send(msg).await?;
             },
             value = rx.recv() => {
                 let c = match value {
@@ -226,7 +213,7 @@ pub async fn handle_stream(
                             }
                         });
 
-                        let url = format!("{}:{}", hostname, port);
+                        let url = format!("tcp://{}:{}", hostname, port);
 
                         tx.send(Message::Message(ServerMessage::ExposeResponse(
                             Ok(
@@ -241,6 +228,7 @@ pub async fn handle_stream(
                         info!("created tunnel {} to {} available on {}", tunnel_id, addr, url);
                     },
                     ClientMessage::UnexposeRequest { tunnel_id } => {
+                        pending_streams.retain(|k, _| k.tunnel_id != tunnel_id);
                         writables.retain(|k, _| k.tunnel_id != tunnel_id);
                         cancels.retain(|k, c| {
                             let keep = k.tunnel_id != tunnel_id;
@@ -256,12 +244,41 @@ pub async fn handle_stream(
                         info!("new stream {:?}: response {:?}", id, result);
 
                         if let Err(_) = result {
-                            writables.remove(&id);
-
-                            if let Some(s) = cancels.remove(&id) {
-                                s.cancel();
-                            }
+                            pending_streams.remove(&id);
+                            continue
                         }
+
+                        let (writable, mut readable) = match pending_streams.remove(&id) {
+                            None => {
+                                error!("got NewStreamResponse for missing stream: {:?}", id);
+                                continue
+                            },
+                            Some(v) => v,
+                        };
+
+                        let cancel = readable.cancellation_token();
+
+                        writables.insert(id, writable);
+                        cancels.insert(id, cancel);
+
+                        let tx2 = tx.clone();
+                        let read_done_tx2 = read_done_tx.clone();
+
+                        tokio::spawn(async move {
+                            match tcp_read_loop(&mut readable, &tx2).await {
+                                Ok(_) => {
+                                    info!("read stream closed gracefully {:?}", id)
+                                }
+                                Err(err) => {
+                                    error!("read stream closed: {:?} {:?}", id, err)
+                                }
+                            }
+
+                            match read_done_tx2.send(id).await {
+                                Ok(_) => {},
+                                Err(err) => error!("sending read done: {:?} {:?}", id, err),
+                            }
+                        });
                     },
                     ClientMessage::Data { id, bytes } => {
                         let w = writables.get_mut(&id);
@@ -342,17 +359,6 @@ async fn tcp_read_loop(
 ) -> Result<()> {
     let id = readable.id();
 
-    let msg = Message::Message(
-        ServerMessage::NewStreamRequest(
-            TunnelledStreamId{
-                tunnel_id: id.tunnel_id,
-                stream_id: id.stream_id,
-            }
-        ),
-    );
-
-    tx.send(msg).await?;
-
     loop {
         let mut buf = BytesMut::with_capacity(4096);
 
@@ -382,5 +388,137 @@ async fn accept_tcp(
         let (writable, readable, _addr) = listener.accept().await?;
 
         tx.send((writable, readable)).await?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::{SocketAddr, IpAddr, Ipv4Addr}, sync::Arc, str::FromStr};
+
+    use tokio::{net::{TcpListener, TcpSocket}, io::AsyncWriteExt};
+    use tokio_util::sync::CancellationToken;
+    use url::Url;
+
+    use crate::{auth::SingleKeyAuthenticator, server::handle_stream, tls::MaybeTlsStream, client::dial, protocol::Message, message::{ClientMessage, StreamKind, ServerMessage}};
+
+    #[tokio::test]
+    async fn start_server_connect_client_expose_tunnel() {
+        let adhoc_bind_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let hostname = "localhost".to_string();
+
+        // let local_listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
+        //     .await
+        //     .expect("failed to bind local listener");
+
+        let server_listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
+            .await
+            .expect("failed to bind server listener");
+
+        let port = server_listener
+            .local_addr()
+            .expect("local addr")
+            .port();
+
+        let server_url = Url::parse(format!("ws://127.0.0.1:{}", port).as_str())
+            .expect("parse url failed");
+
+
+        let cancel = CancellationToken::new();
+
+        let auth = Arc::new(SingleKeyAuthenticator::new("".to_string()));
+
+        // let local = tokio::spawn(async move {
+        //     let (stream, _addr) = local_listener.accept().await.expect("failed to accept");
+
+        //     let mut stream = MaybeTlsStream::Plain(stream);
+
+        //     let mut arr: [u8;5] = [0; 5];
+
+        //     stream.read_exact(&mut arr)
+        //         .await
+        //         .expect("expected to read five bytes");
+
+        //     assert_eq!("hello", std::str::from_utf8(&arr).expect("expected UTF-8"));
+
+        //     let b = "world".as_bytes();
+
+        //     stream.write_all(&b).await
+        //         .expect("writing world")
+        // });
+
+        println!("aaaaaaa");
+        let cancel2 = cancel.clone();
+
+        let server = tokio::spawn(async move {
+            let (stream, addr) = server_listener.accept().await.expect("failed to accept");
+
+            let stream = MaybeTlsStream::Plain(stream);
+
+            println!("handle stream");
+
+            handle_stream(cancel2, auth, stream, addr, adhoc_bind_addr, hostname)
+                .await
+                .expect_err("expected cancellation");
+
+            println!("hs done");
+        });
+
+        let (sender, mut receiver) = dial(server_url)
+            .await
+            .expect("failed to dial server");
+
+        sender.send(Message::Message(
+            ClientMessage::ExposeRequest{
+                local_id: 0,
+                kind: StreamKind::Tcp,
+            },
+        ))
+            .await
+            .expect("sending expose request");
+
+        let msg = receiver.recv().await.expect("expose response");
+
+        let res = match msg {
+            Message::Message(ServerMessage::ExposeResponse(Ok(res))) => res,
+            msg => panic!("unexpected message: {:?}", msg)
+        };
+
+        println!("url: {}", res.url);
+
+        let url = Url::parse(res.url.as_str()).expect("parsing failed");
+
+        let port = url.port().expect("port missing from url");
+
+        let tcp_addr = SocketAddr::from_str(format!("127.0.0.1:{}", port).as_str())
+            .expect("socket addr parsing");
+
+        let mut socket = TcpSocket::new_v4()
+            .expect("tcp socket")
+            .connect(tcp_addr)
+            .await
+            .expect("connect");
+
+        socket.write_all(b"hello").await.expect("write socket failed");
+
+        let msg = receiver.recv().await.expect("data message");
+
+        let id = match msg {
+            Message::Message(ServerMessage::NewStreamRequest(id)) => id,
+            msg => panic!("unexpected message: {:?}", msg)
+        };
+
+        sender.send(Message::Message(
+            ClientMessage::NewStreamResponse{
+                id,
+                result: Ok(()),
+            },
+        ))
+            .await
+            .expect("sending new stream response");
+
+
+        cancel.cancel();
+
+        server.await.expect("await server");
     }
 }
