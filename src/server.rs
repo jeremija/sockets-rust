@@ -395,7 +395,7 @@ async fn accept_tcp(
 mod tests {
     use std::{net::{SocketAddr, IpAddr, Ipv4Addr}, sync::Arc, str::FromStr};
 
-    use tokio::{net::{TcpListener, TcpSocket}, io::AsyncWriteExt};
+    use tokio::{net::{TcpListener, TcpSocket}, io::{AsyncWriteExt, AsyncReadExt}};
     use tokio_util::sync::CancellationToken;
     use url::Url;
 
@@ -500,7 +500,7 @@ mod tests {
 
         socket.write_all(b"hello").await.expect("write socket failed");
 
-        let msg = receiver.recv().await.expect("data message");
+        let msg = receiver.recv().await.expect("new stream request");
 
         let id = match msg {
             Message::Message(ServerMessage::NewStreamRequest(id)) => id,
@@ -516,6 +516,27 @@ mod tests {
             .await
             .expect("sending new stream response");
 
+        let msg = receiver.recv().await.expect("new stream request");
+
+        assert_eq!(
+            msg,
+            Message::Message(ServerMessage::Data{id, bytes: b"hello".to_vec()}),
+        );
+
+        sender.send(Message::Message(
+            ClientMessage::Data{
+                id,
+                bytes: b"world".to_vec(),
+            },
+        ))
+            .await
+            .expect("sending data");
+
+        let mut b: [u8; 5] = [0; 5];
+
+        socket.read_exact(&mut b).await.expect("expected 'world'");
+
+        assert_eq!("world", std::str::from_utf8(&b).expect("utf8"));
 
         cancel.cancel();
 
