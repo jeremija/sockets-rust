@@ -84,3 +84,39 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for MaybeTlsStream<S> {
         }
     }
 }
+
+#[cfg(feature = "insecure")]
+mod danger {
+    pub struct NoCertificateVerification {}
+
+    impl rustls::client::ServerCertVerifier for NoCertificateVerification {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &rustls::Certificate,
+            _intermediates: &[rustls::Certificate],
+            _server_name: &rustls::ServerName,
+            _scts: &mut dyn Iterator<Item = &[u8]>,
+            _ocsp: &[u8],
+            _now: std::time::SystemTime,
+        ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::ServerCertVerified::assertion())
+        }
+    }
+}
+
+#[cfg(feature = "insecure")]
+pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
+    use std::sync::Arc;
+
+    let config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_custom_certificate_verifier(Arc::new(danger::NoCertificateVerification{}))
+        .with_no_client_auth();
+
+    Some(config)
+}
+
+#[cfg(not(feature = "insecure"))]
+pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
+    None
+}

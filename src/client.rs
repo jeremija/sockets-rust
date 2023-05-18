@@ -1,23 +1,33 @@
-use std::{net::SocketAddr, collections::HashMap};
+use std::{net::SocketAddr, collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use bytes::BytesMut;
 use futures::stream::SplitSink;
 use tokio::{net::TcpStream, select};
-use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream, tungstenite::protocol::Message as WSMessage};
+use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, tungstenite::protocol::Message as WSMessage, connect_async_tls_with_config, Connector};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use log::{error, info};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKind, StreamSide}, protocol::{deserialize, serialize, Message}, tcp::{WritableStream, ReadableStream, self}, error::Error};
+use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKind, StreamSide}, protocol::{deserialize, serialize, Message}, tcp::{WritableStream, ReadableStream, self}, error::Error, tls::new_client_config};
 
 type Sender = mpsc::Sender<Message<ClientMessage>>;
 type Receiver = mpsc::Receiver<Message<ServerMessage>>;
 
 pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
-    let (ws_stream, _) = connect_async(server_url).await?;
+    let connector = match new_client_config() {
+        None => None,
+        Some(config) => Some(Connector::Rustls(Arc::new(config))),
+    };
+
+    let (ws_stream, _) = connect_async_tls_with_config(
+        server_url,
+        None,
+        false,
+        connector,
+    ).await?;
 
     let (mut tx, mut rx) = ws_stream.split();
 

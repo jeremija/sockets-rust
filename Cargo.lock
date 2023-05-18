@@ -1035,6 +1035,7 @@ dependencies = [
  "futures",
  "hyper",
  "log",
+ "rustls",
  "rustls-pemfile",
  "serde",
  "serde_json",
