@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::error::Error;
 
-pub trait Authenticator {
+pub trait Authenticator: Send + Sync {
     fn auth_needed(&self) -> bool;
     fn authenticate(&self, api_key: String) -> Result<()>;
     // fn clone(&self) -> Self where Self: Sized;
