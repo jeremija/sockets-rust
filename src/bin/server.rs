@@ -1,12 +1,13 @@
-use std::{net::SocketAddr, collections::HashMap};
+use std::{net::SocketAddr, collections::HashMap, env, sync::Arc};
 
 use bytes::BytesMut;
 use clap::{command, Parser};
-use anyhow::{anyhow, Result};
-use sockets::{server, protocol::Message, message::{ClientMessage, ServerMessage, ExposeResponse, StreamKind, TunnelId, StreamId, StreamSide, TunnelledStreamId}};
-use tokio::{net::{TcpListener, TcpStream}, select, sync::mpsc, io::{WriteHalf, ReadHalf, AsyncWriteExt}};
+use anyhow::Result;
+use env_logger::Env;
+use log::{info, error};
+use sockets::{server, protocol::Message, message::{ServerMessage, TunnelId, StreamId, StreamSide, TunnelledStreamId, ClientMessage, StreamKind, ExposeResponse}, tcp::{ReadableStream, WritableStream}, auth::{Authenticator, SingleKeyAuthenticator}, error::Error};
+use tokio::{net::{TcpListener, TcpStream}, select, sync::mpsc};
 use tokio_tungstenite::MaybeTlsStream;
-use tokio::io::AsyncReadExt;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -24,22 +25,34 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
     let args = Args::parse();
 
     let listener = TcpListener::bind(args.listen_addr).await?;
 
+    info!("listening on {}", listener.local_addr()?);
+
+    let api_key = env::var("SOCKETS_SINGLE_API_KEY").unwrap_or("".to_string());
+
+    let authenticator: Arc<dyn Authenticator + Send + Sync> = Arc::new(SingleKeyAuthenticator::new(api_key));
+
     loop {
-        let (stream, _addr) = listener.accept().await?;
+        let (stream, addr) = listener.accept().await?;
         let hostname = args.hostname.clone();
+
+        info!("new TCP connection from: {} on {}", addr, args.listen_addr);
+
+        let authenticator = authenticator.clone();
 
         tokio::spawn(async move {
             // TODO add TLS support.
             let stream = MaybeTlsStream::Plain(stream);
 
-            match handle_stream(stream, hostname).await {
+            match handle_stream(authenticator, stream, addr, hostname).await {
                 Ok(()) => {},
                 Err(err) => {
-                    eprintln!("error: {:?}", err);
+                    error!("error handling stream: {}: {:?}", addr, err);
                 }
             }
 
@@ -48,12 +61,14 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_stream(
+    authenticator: Arc<dyn Authenticator + Send + Sync>,
     stream: MaybeTlsStream<TcpStream>,
+    addr: SocketAddr,
     hostname: String,
 ) -> Result<()> {
     let ws_stream = tokio_tungstenite::accept_async(stream).await?;
 
-    let (tx, mut rx) = server::from_stream(ws_stream).await?;
+    let (tx, mut rx) = server::from_stream(ws_stream, addr).await?;
 
     let (stream_tx, mut stream_rx) = mpsc::channel::<(WritableStream, ReadableStream)>(16);
     let (read_done_tx, mut read_done_rx) = mpsc::channel::<TunnelledStreamId>(16);
@@ -65,6 +80,9 @@ async fn handle_stream(
     let mut writables = HashMap::new();
     let mut cancels = HashMap::new();
 
+    let auth_needed = authenticator.auth_needed();
+    let mut authorized = false;
+
     // FIXME a lot of code duplication between server and client.
     loop {
         select! {
@@ -74,7 +92,7 @@ async fn handle_stream(
 
                 match conn {
                     None => {
-                        eprintln!("got empty conn");
+                        error!("stream_rx.recv() returned None: {:?}", addr);
                         continue
                     }
                     Some((w, r)) => {
@@ -83,28 +101,28 @@ async fn handle_stream(
                     },
                 }
 
-                let cancel = tokio_util::sync::CancellationToken::new();
-                let cancel2 = cancel.clone();
+                let id = writable.id();
+                let cancel = readable.cancellation_token();
 
-                writables.insert(writable.id, writable);
-                cancels.insert(readable.id, cancel);
+                writables.insert(id, writable);
+                cancels.insert(id, cancel);
 
                 let tx2 = tx.clone();
                 let read_done_tx2 = read_done_tx.clone();
 
                 tokio::spawn(async move {
-                    match tcp_read_loop(&mut readable, cancel2, &tx2).await {
+                    match tcp_read_loop(&mut readable, &tx2).await {
                         Ok(_) => {
-                            eprintln!("conn closed gracefully")
+                            info!("read stream closed gracefully {:?}", id)
                         }
                         Err(err) => {
-                            eprintln!("error reading: {:?}", err)
+                            error!("read stream closed: {:?} {:?}", id, err)
                         }
                     }
 
-                    match read_done_tx2.send(readable.id).await {
+                    match read_done_tx2.send(id).await {
                         Ok(_) => {},
-                        Err(err) => eprintln!("failed to send read done: {:?}", err),
+                        Err(err) => error!("sending read done: {:?} {:?}", id, err),
                     }
                 });
 
@@ -117,8 +135,32 @@ async fn handle_stream(
                     Some(Message::Message(v)) => v,
                 };
 
+                if auth_needed && !authorized {
+                    match c {
+                        ClientMessage::AuthenticateRequest{ .. } => {},
+                        _ => {
+                            tx.send(Message::Message(ServerMessage::Unauthorized)).await?;
+                            return Err(Error::Unauthorized.into());
+                        },
+                    }
+                }
+
                 match c {
-                    ClientMessage::ExposeRequest { kind } => {
+                    ClientMessage::AuthenticateRequest{ api_key } => {
+                        match authenticator.authenticate(api_key) {
+                            Ok(_) => {
+                                info!("authenticated {}", addr);
+                            },
+                            Err(err) => {
+                                tx.send(Message::Message(ServerMessage::Unauthorized)).await?;
+
+                                return Err(err)
+                            }
+                        }
+
+                        authorized = true;
+                    }
+                    ClientMessage::ExposeRequest { local_id, kind } => {
                         if kind != StreamKind::Tcp {
                             tx.send(Message::Message(ServerMessage::ExposeResponse(
                                 Err("only tcp is supported".to_string()),
@@ -126,37 +168,40 @@ async fn handle_stream(
                             continue
                         }
 
-                        match TcpListener::bind("0.0.0.0:0").await {
-                            Ok(listener) => {
-                                let port = listener.local_addr()?.port();
-
-                                let tunnel_id = TunnelId::rand();
-
-                                let stream_tx2 = stream_tx.clone();
-
-                                tokio::spawn(async move {
-                                    match accept_tcp(tunnel_id, listener, stream_tx2).await {
-                                        Ok(()) => {},
-                                        Err(err) => eprintln!("error accepting tcp: {:?}", err),
-                                    }
-                                });
-
-                                tx.send(Message::Message(ServerMessage::ExposeResponse(
-                                    Ok(
-                                        ExposeResponse{
-                                            tunnel_id,
-                                            url: format!("{}:{}", hostname, port),
-                                        },
-                                    )
-                                ))).await?;
-                            },
+                        let listener = match TcpListener::bind("0.0.0.0:0").await {
+                            Ok(listener) => listener,
                             Err(err) => {
-                                eprintln!("failed to create server listener: {:?}", err);
+                                error!("creating server listener: {:?}", err);
                                 tx.send(Message::Message(ServerMessage::ExposeResponse(
                                     Err("failed to create server listener".to_string()),
                                 ))).await?;
+
+                                continue
                             },
-                        }
+                        };
+
+                        let port = listener.local_addr()?.port();
+
+                        let tunnel_id = TunnelId::rand();
+
+                        let stream_tx2 = stream_tx.clone();
+
+                        tokio::spawn(async move {
+                            match accept_tcp(tunnel_id, listener, stream_tx2).await {
+                                Ok(()) => {},
+                                Err(err) => error!("accepting tcp: {:?}", err),
+                            }
+                        });
+
+                        tx.send(Message::Message(ServerMessage::ExposeResponse(
+                            Ok(
+                                ExposeResponse{
+                                    local_id,
+                                    tunnel_id,
+                                    url: format!("{}:{}", hostname, port),
+                                },
+                            )
+                        ))).await?
                     },
                     ClientMessage::UnexposeRequest { tunnel_id } => {
                         writables.retain(|k, _| k.tunnel_id != tunnel_id);
@@ -171,7 +216,7 @@ async fn handle_stream(
                         });
                     },
                     ClientMessage::NewStreamResponse{ id, result } => {
-                        eprintln!("new stream response {:?}", result);
+                        info!("new stream {:?}: response {:?}", id, result);
 
                         if let Err(_) = result {
                             writables.remove(&id);
@@ -186,17 +231,17 @@ async fn handle_stream(
 
                         let w = match w {
                             None => {
-                                eprintln!("bytes for missing writable: {:?}", id);
+                                info!("bytes for missing writable: {:?}", id);
                                 continue
                             },
                             Some(w) => w,
                         };
 
                         // FIXME blocking the main event loop.
-                        match w.tx.write_all(&bytes).await {
+                        match w.write_all(&bytes).await {
                             Ok(_) => {},
                             Err(err) => {
-                                eprintln!("error writing bytes: {:?}", err);
+                                info!("write failed: {:?} {:?}", id, err);
 
                                 writables.remove(&id);
 
@@ -210,7 +255,7 @@ async fn handle_stream(
                         }
                     },
                     ClientMessage::StreamClosed {id, side } => {
-                        eprintln!("client server stream closed: {:?}, side: {:?}", id, side);
+                        info!("client server stream closed: {:?}, side: {:?}", id, side);
                         // When the client has closed the read side, it means there will be no more
                         // writes, so we can remove our writable.
                         if side == StreamSide::Read {
@@ -228,7 +273,7 @@ async fn handle_stream(
             read_done = read_done_rx.recv() => {
                 let id = match read_done {
                     None => {
-                        eprintln!("got none from read_done");
+                        info!("got none from read_done");
                         continue
                     },
                     Some(v) => v,
@@ -247,35 +292,24 @@ async fn handle_stream(
 
                 match tx.send(msg).await {
                     Ok(_) => {},
-                    Err(err) => eprintln!("failed to send read closed: {:?}", err),
+                    Err(err) => error!("failed to send read closed: {:?}", err),
                 }
             }
         }
     }
 }
 
-#[derive(Debug)]
-struct WritableStream {
-    tx: WriteHalf<TcpStream>,
-    id: TunnelledStreamId,
-}
-
-#[derive(Debug)]
-struct ReadableStream {
-    rx: ReadHalf<TcpStream>,
-    id: TunnelledStreamId,
-}
-
 async fn tcp_read_loop(
     readable: &mut ReadableStream,
-    cancel: tokio_util::sync::CancellationToken,
     tx: &mpsc::Sender<Message<ServerMessage>>,
 ) -> Result<()> {
+    let id = readable.id();
+
     let msg = Message::Message(
         ServerMessage::NewStreamRequest(
             TunnelledStreamId{
-                tunnel_id: readable.id.tunnel_id,
-                stream_id: readable.id.stream_id,
+                tunnel_id: id.tunnel_id,
+                stream_id: id.stream_id,
             }
         ),
     );
@@ -285,30 +319,16 @@ async fn tcp_read_loop(
     loop {
         let mut buf = BytesMut::with_capacity(4096);
 
-        let n;
-
-        select!{
-            result = readable.rx.read_buf(&mut buf) => {
-                n = match result {
-                    Ok(0) => {
-                        return Ok(());
-                    },
-                    Ok(n) => n,
-                    Err(err) => {
-                        return Err(err.into());
-                    },
-                };
-            }
-            _ = cancel.cancelled() => {
-                return Err(anyhow!("canceled")) // TODO
-            }
+        let n = readable.read_buf(&mut buf).await?;
+        if n == 0 {
+            return Ok(());
         }
 
         let bytes = Vec::from(&buf[..n]);
 
         let msg = Message::Message(
             ServerMessage::Data{
-                id: readable.id,
+                id,
                 bytes,
             },
         );
@@ -331,15 +351,9 @@ async fn accept_tcp(
 
         let id = TunnelledStreamId { tunnel_id, stream_id };
 
-        let writable = WritableStream{
-            tx: tcp_tx,
-            id,
-        };
+        let writable = WritableStream::new(id, tcp_tx);
 
-        let readable = ReadableStream{
-            rx: tcp_rx,
-            id,
-        };
+        let readable = ReadableStream::new(id, tcp_rx);
 
         tx.send((writable, readable)).await?;
     }

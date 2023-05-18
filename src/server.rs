@@ -4,17 +4,23 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Message, MaybeTlsStream};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use log::{error, info};
 
 use crate::{message::{ClientMessage, ServerMessage}, protocol::{self, serialize, deserialize}};
 
 type Sender = mpsc::Sender<protocol::Message<ServerMessage>>;
 type Receiver = mpsc::Receiver<protocol::Message<ClientMessage>>;
 
-pub async fn from_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Result<(Sender, Receiver)> {
+pub async fn from_stream(
+    ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    addr: std::net::SocketAddr,
+) -> Result<(Sender, Receiver)> {
     let (mut tx, mut rx) = ws_stream.split();
 
     let (mut client_msg_tx, client_msg_rx) = mpsc::channel::<protocol::Message<ClientMessage>>(16);
     let (server_msg_tx, mut server_msg_rx) = mpsc::channel::<protocol::Message<ServerMessage>>(16);
+
+    info!("new websocket connection from {}", addr);
 
     tokio::spawn(async move {
         while let Some(msg) = rx.next().await {
@@ -24,7 +30,7 @@ pub async fn from_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
                 Ok(Some(_)) => continue,
                 Ok(None) => return,
                 Err(err) => {
-                    eprintln!("error receiving server message: {:?}", err);
+                    error!("receiving server message: {:?}", err);
                     return
                 }
             }
@@ -36,7 +42,7 @@ pub async fn from_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
             match send_server_message(&mut tx, msg).await {
                 Ok(()) => continue,
                 Err(err) => {
-                    eprintln!("error sending client message: {:?}", err);
+                    error!("sending client message: {:?}", err);
                     return
                 }
             }

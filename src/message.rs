@@ -6,9 +6,11 @@ use crate::base64;
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
+    AuthenticateRequest{api_key: String},
     /// ExposeRequest is sent when a TCPListener is successfully tunneled to
     /// the server side.
     ExposeRequest {
+        local_id: u32,
         kind: StreamKind
     },
     /// UnexposeRequest is sent when a TCPListener is successfully removed
@@ -38,6 +40,7 @@ pub enum ClientMessage {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "type")]
 pub enum ServerMessage{
+    Unauthorized,
     /// ExposeResponse is sent after a tunnel has been established.
     ExposeResponse(Result<ExposeResponse, String>),
     /// UnexposeResponse is sent after a tunnel has been removed.
@@ -62,6 +65,7 @@ pub enum ServerMessage{
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct ExposeResponse {
+    pub local_id: u32,
     pub tunnel_id: TunnelId,
     pub url: String,
 }

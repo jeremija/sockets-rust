@@ -4,6 +4,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream, tungstenite::protocol::Message};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use log::error;
 
 use crate::{message::{ClientMessage, ServerMessage}, protocol::{self, deserialize, serialize}};
 
@@ -11,11 +12,7 @@ type Sender = mpsc::Sender<protocol::Message<ClientMessage>>;
 type Receiver = mpsc::Receiver<protocol::Message<ServerMessage>>;
 
 pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
-    let (ws_stream, response) = connect_async(server_url).await?;
-
-    for (ref header, _value) in response.headers() {
-        eprintln!("header * {}", header);
-    }
+    let (ws_stream, _) = connect_async(server_url).await?;
 
     let (mut tx, mut rx) = ws_stream.split();
 
@@ -30,7 +27,7 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
                 Ok(Some(_)) => continue,
                 Ok(None) => return,
                 Err(err) => {
-                    eprintln!("error receiving server message: {:?}", err);
+                    error!("receiving server message: {:?}", err);
                     return
                 }
             }
@@ -42,7 +39,7 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
             match send_client_message(&mut tx, msg).await {
                 Ok(()) => continue,
                 Err(err) => {
-                    eprintln!("error sending client message: {:?}", err);
+                    error!("sending client message: {:?}", err);
                     return
                 }
             }
