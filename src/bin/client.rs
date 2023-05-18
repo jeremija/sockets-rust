@@ -4,8 +4,9 @@ use anyhow::{anyhow, Result};
 use bytes::BytesMut;
 use env_logger::Env;
 use log::{error, info};
-use sockets::{client, message::{ClientMessage, StreamKind, ServerMessage, TunnelledStreamId, StreamSide}, protocol::Message, tcp::{ReadableStream, WritableStream}, error::Error};
-use tokio::{sync::mpsc, net::TcpSocket, select};
+use sockets::{client, message::{ClientMessage, StreamKind, ServerMessage, TunnelledStreamId, StreamSide}, protocol::Message, tcp::{ReadableStream, WritableStream, dial}, error::Error};
+use tokio::{sync::mpsc, select};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use clap::Parser;
@@ -54,6 +55,8 @@ async fn main() -> Result<()> {
     }
 
     let mut tunnels =  HashMap::with_capacity(args.expose.len());
+
+    let cancel = CancellationToken::new();
 
     let mut writables = HashMap::new();
     let mut cancels = HashMap::new();
@@ -117,10 +120,9 @@ async fn main() -> Result<()> {
                         match exp {
                             Ok(res) => {
                                 let &socket_addr = args.expose.get(res.local_id as usize).ok_or_else(|| Error::InvalidLocalId)?;
-
-                                info!("tunnel to {} id {}, url: {}", socket_addr, res.tunnel_id, res.url);
-
                                 tunnels.insert(res.tunnel_id, socket_addr);
+
+                                info!("created tunnel {} to {} via {}", res.tunnel_id, socket_addr, res.url);
                             }
                             Err(err) => {
                                 return Err(anyhow!("failed to expose: {}", err)) // TODO
@@ -151,11 +153,12 @@ async fn main() -> Result<()> {
 
                         let tx2 = tx.clone();
                         let stream_tx2 = stream_tx.clone();
+                        let cancel2 = cancel.clone();
 
                         tokio::spawn(async move {
                             let result;
 
-                            match tcp_dial(id, socket_addr, stream_tx2).await {
+                            match tcp_dial(id, socket_addr, stream_tx2, cancel2).await {
                                 Ok(()) => {
                                     result = Ok(())
                                 },
@@ -276,14 +279,9 @@ async fn tcp_dial(
     id: TunnelledStreamId,
     addr: SocketAddr,
     tx: mpsc::Sender<(WritableStream, ReadableStream)>,
+    cancel: CancellationToken,
 ) -> Result<()> {
-    let stream = TcpSocket::new_v4()?.connect(addr).await?;
-
-    let (tcp_rx, tcp_tx) = tokio::io::split(stream);
-
-    let writable = WritableStream::new(id, tcp_tx);
-
-    let readable = ReadableStream::new(id, tcp_rx);
+    let (writable, readable) = dial(id, addr, cancel).await?;
 
     tx.send((writable, readable)).await?;
 

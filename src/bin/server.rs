@@ -1,13 +1,14 @@
-use std::{net::SocketAddr, collections::HashMap, env, sync::Arc};
+use std::{net::{SocketAddr, IpAddr}, collections::HashMap, env, sync::Arc};
 
 use bytes::BytesMut;
 use clap::{command, Parser};
 use anyhow::Result;
 use env_logger::Env;
 use log::{info, error};
-use sockets::{server, protocol::Message, message::{ServerMessage, TunnelId, StreamId, StreamSide, TunnelledStreamId, ClientMessage, StreamKind, ExposeResponse}, tcp::{ReadableStream, WritableStream}, auth::{Authenticator, SingleKeyAuthenticator}, error::Error};
+use sockets::{server, protocol::Message, message::{ServerMessage, TunnelId, StreamSide, TunnelledStreamId, ClientMessage, StreamKind, ExposeResponse}, tcp::{ReadableStream, WritableStream, Listener}, auth::{Authenticator, SingleKeyAuthenticator}, error::Error};
 use tokio::{net::{TcpListener, TcpStream}, select, sync::mpsc};
 use tokio_tungstenite::MaybeTlsStream;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -21,6 +22,13 @@ struct Args {
         default_value = "127.0.0.1:3000"
     ) ]
     listen_addr: SocketAddr,
+
+    #[arg(
+        long,
+        help = "Bind args for webserver socket",
+        default_value = "0.0.0.0"
+    )]
+    adhoc_bind_addr: IpAddr,
 }
 
 #[tokio::main]
@@ -40,30 +48,34 @@ async fn main() -> Result<()> {
     loop {
         let (stream, addr) = listener.accept().await?;
         let hostname = args.hostname.clone();
+        let adhoc_bind_addr = args.adhoc_bind_addr;
 
         info!("new TCP connection from: {} on {}", addr, args.listen_addr);
 
         let authenticator = authenticator.clone();
+        let cancel = CancellationToken::new();
 
         tokio::spawn(async move {
+            let cancel2 = cancel.clone();
             // TODO add TLS support.
             let stream = MaybeTlsStream::Plain(stream);
 
-            match handle_stream(authenticator, stream, addr, hostname).await {
-                Ok(()) => {},
-                Err(err) => {
-                    error!("error handling stream: {}: {:?}", addr, err);
-                }
+            match handle_stream(cancel2, authenticator, stream, addr, adhoc_bind_addr, hostname).await {
+                Ok(()) => info!("stream done: {}", addr),
+                Err(err) => error!("handling stream: {}: {:?}", addr, err),
             }
 
+            cancel.cancel();
         });
     }
 }
 
 async fn handle_stream(
+    cancel: CancellationToken,
     authenticator: Arc<dyn Authenticator + Send + Sync>,
     stream: MaybeTlsStream<TcpStream>,
     addr: SocketAddr,
+    adhoc_bind_addr: IpAddr,
     hostname: String,
 ) -> Result<()> {
     let ws_stream = tokio_tungstenite::accept_async(stream).await?;
@@ -168,7 +180,9 @@ async fn handle_stream(
                             continue
                         }
 
-                        let listener = match TcpListener::bind("0.0.0.0:0").await {
+                        let local_listener_addr = SocketAddr::new(adhoc_bind_addr, 0);
+
+                        let listener = match TcpListener::bind(local_listener_addr).await {
                             Ok(listener) => listener,
                             Err(err) => {
                                 error!("creating server listener: {:?}", err);
@@ -180,28 +194,36 @@ async fn handle_stream(
                             },
                         };
 
-                        let port = listener.local_addr()?.port();
+                        let local_listener_addr = listener.local_addr()?;
+
+                        let port = local_listener_addr.port();
 
                         let tunnel_id = TunnelId::rand();
 
                         let stream_tx2 = stream_tx.clone();
 
+                        let listener = Listener::new(tunnel_id, listener, cancel.clone());
+
                         tokio::spawn(async move {
-                            match accept_tcp(tunnel_id, listener, stream_tx2).await {
-                                Ok(()) => {},
-                                Err(err) => error!("accepting tcp: {:?}", err),
+                            match accept_tcp(listener, stream_tx2).await {
+                                Ok(()) => info!("accept_tcp done: {}", tunnel_id),
+                                Err(err) => error!("accept_tcp: {}: {:?}", tunnel_id, err),
                             }
                         });
+
+                        let url = format!("{}:{}", hostname, port);
 
                         tx.send(Message::Message(ServerMessage::ExposeResponse(
                             Ok(
                                 ExposeResponse{
                                     local_id,
                                     tunnel_id,
-                                    url: format!("{}:{}", hostname, port),
+                                    url: url.clone(),
                                 },
                             )
-                        ))).await?
+                        ))).await?;
+
+                        info!("created tunnel {} to {} available on {}", tunnel_id, addr, url);
                     },
                     ClientMessage::UnexposeRequest { tunnel_id } => {
                         writables.retain(|k, _| k.tunnel_id != tunnel_id);
@@ -338,22 +360,11 @@ async fn tcp_read_loop(
 }
 
 async fn accept_tcp(
-    tunnel_id: TunnelId,
-    listener: TcpListener,
+    listener: Listener,
     tx: mpsc::Sender<(WritableStream, ReadableStream)>,
 ) -> Result<()> {
     loop {
-        let (tcp_stream, _addr) = listener.accept().await?;
-
-        let stream_id = StreamId::rand();
-
-        let (tcp_rx, tcp_tx) = tokio::io::split(tcp_stream);
-
-        let id = TunnelledStreamId { tunnel_id, stream_id };
-
-        let writable = WritableStream::new(id, tcp_tx);
-
-        let readable = ReadableStream::new(id, tcp_rx);
+        let (writable, readable, _addr) = listener.accept().await?;
 
         tx.send((writable, readable)).await?;
     }

@@ -10,6 +10,9 @@ pub enum Error {
     InvalidLocalId,
     #[error("unknown tunnel id")]
     UnknownTunnelId,
+
+    #[error("IOError")]
+    IOError(#[from] std::io::Error),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
