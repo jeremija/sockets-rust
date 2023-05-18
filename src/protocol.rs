@@ -8,6 +8,7 @@ where
 {
     match msg? {
     WSMessage::Binary(b) => {
+        // TODO use a more efficient serialization method than JSON.
         let srv_msg: T = serde_json::from_slice(b.as_slice())?;
         Ok(Some(Message::Message(srv_msg)))
     },
@@ -28,6 +29,7 @@ where
 {
     match msg {
         Message::Message(msg) => {
+            // TODO use a more efficient serialization method than JSON.
             let json = serde_json::to_vec(&msg)?;
             Ok(WSMessage::Binary(json))
         }
