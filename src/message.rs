@@ -6,21 +6,23 @@ use crate::base64;
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
-    AuthenticateRequest{api_key: String},
+    AuthenticateRequest {
+        api_key: String,
+    },
     /// ExposeRequest is sent when a TCPListener is successfully tunneled to
     /// the server side.
     ExposeRequest {
         local_id: u32,
-        kind: StreamKind
+        kind: StreamKind,
     },
     /// UnexposeRequest is sent when a TCPListener is successfully removed
     /// from the server side.
     UnexposeRequest {
-        tunnel_id: TunnelId
+        tunnel_id: TunnelId,
     },
     /// NewStreamResponse is sent when a new tunneled connection has been
     /// establihsed.
-    NewStreamResponse{
+    NewStreamResponse {
         id: TunnelledStreamId,
         result: Result<(), String>,
     },
@@ -39,7 +41,7 @@ pub enum ClientMessage {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "type")]
-pub enum ServerMessage{
+pub enum ServerMessage {
     Unauthorized,
     /// ExposeResponse is sent after a tunnel has been established.
     ExposeResponse(Result<ExposeResponse, String>),
@@ -91,7 +93,6 @@ impl TunnelId {
     pub fn rand() -> Self {
         Self(Uuid::new_v4())
     }
-
 }
 
 impl std::fmt::Display for TunnelId {
@@ -129,37 +130,29 @@ mod tests {
 
     #[test]
     fn serde_json_client_message() {
-        let msg = ClientMessage::ExposeRequest{
+        let msg = ClientMessage::ExposeRequest {
             local_id: 123,
             kind: StreamKind::Tcp,
         };
 
-        let json = serde_json::to_value(msg.clone())
-            .expect("failed to serialize json");
+        let json = serde_json::to_value(msg.clone()).expect("failed to serialize json");
 
-        let msg2: ClientMessage = serde_json::from_value(json)
-            .expect("failed to deserialize json");
+        let msg2: ClientMessage = serde_json::from_value(json).expect("failed to deserialize json");
 
         assert_eq!(msg, msg2, "expected {:?} to be eqaul to {:?}", msg, msg2);
     }
 
     #[test]
     fn serde_json_server_message() {
-        let msg = ServerMessage::ExposeResponse(
-            Ok(
-                ExposeResponse{
-                    local_id: 123,
-                    url: "tcp.test.com:52131".to_string(),
-                    tunnel_id: TunnelId::rand(),
-                },
-            ),
-        );
+        let msg = ServerMessage::ExposeResponse(Ok(ExposeResponse {
+            local_id: 123,
+            url: "tcp.test.com:52131".to_string(),
+            tunnel_id: TunnelId::rand(),
+        }));
 
-        let json = serde_json::to_value(msg.clone())
-            .expect("failed to serialize json");
+        let json = serde_json::to_value(msg.clone()).expect("failed to serialize json");
 
-        let msg2: ServerMessage = serde_json::from_value(json)
-            .expect("failed to deserialize json");
+        let msg2: ServerMessage = serde_json::from_value(json).expect("failed to deserialize json");
 
         assert_eq!(msg, msg2, "expected {:?} to be eqaul to {:?}", msg, msg2);
     }

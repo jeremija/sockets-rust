@@ -1,17 +1,26 @@
-use std::{net::SocketAddr, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use bytes::BytesMut;
 use futures::stream::SplitSink;
-use tokio::{net::TcpStream, select};
-use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, tungstenite::protocol::Message as WSMessage, connect_async_tls_with_config, Connector};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
 use log::{error, info};
+use tokio::sync::mpsc;
+use tokio::{net::TcpStream, select};
+use tokio_tungstenite::{
+    connect_async_tls_with_config, tungstenite::protocol::Message as WSMessage, Connector,
+    MaybeTlsStream, WebSocketStream,
+};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKind, StreamSide}, protocol::{deserialize, serialize, Message}, tcp::{WritableStream, ReadableStream, self}, error::Error, tls::new_client_config};
+use crate::{
+    error::Error,
+    message::{ClientMessage, ServerMessage, StreamKind, StreamSide, TunnelledStreamId},
+    protocol::{deserialize, serialize, Message},
+    tcp::{self, ReadableStream, WritableStream},
+    tls::new_client_config,
+};
 
 type Sender = mpsc::Sender<Message<ClientMessage>>;
 type Receiver = mpsc::Receiver<Message<ServerMessage>>;
@@ -24,12 +33,7 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
         Some(config) => Some(Connector::Rustls(Arc::new(config))),
     };
 
-    let (ws_stream, _) = connect_async_tls_with_config(
-        server_url,
-        None,
-        false,
-        connector,
-    ).await?;
+    let (ws_stream, _) = connect_async_tls_with_config(server_url, None, false, connector).await?;
 
     let (mut tx, mut rx) = ws_stream.split();
 
@@ -45,7 +49,7 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
                 Ok(None) => return,
                 Err(err) => {
                     error!("receiving server message: {:?}", err);
-                    return
+                    return;
                 }
             }
         }
@@ -57,7 +61,7 @@ pub async fn dial<'a, 'b>(server_url: url::Url) -> Result<(Sender, Receiver)> {
                 Ok(()) => continue,
                 Err(err) => {
                     error!("sending client message: {:?}", err);
-                    return
+                    return;
                 }
             }
         }
@@ -78,52 +82,43 @@ async fn recv_server_message(
             tx.send(val).await?;
             Ok(Some(()))
         }
-        None => Ok(None)
+        None => Ok(None),
     }
 }
-
 
 /// Encode and send server message.
 async fn send_client_message(
     tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WSMessage>,
     msg: Message<ClientMessage>,
-    ) -> Result<()> {
+) -> Result<()> {
     let msg = serialize(msg)?;
     tx.send(msg).await?;
     Ok(())
 }
 
 /// Init connects to the server, exposes the local sockets and starts the main loop.
-pub async fn init(
-    api_key: String,
-    server_url: Url,
-    expose: Vec<SocketAddr>,
-) -> Result<()> {
+pub async fn init(api_key: String, server_url: Url, expose: Vec<SocketAddr>) -> Result<()> {
     let (tx, mut rx) = dial(server_url).await?;
 
     let (stream_tx, mut stream_rx) = mpsc::channel::<(WritableStream, ReadableStream)>(16);
     let (read_done_tx, mut read_done_rx) = mpsc::channel::<TunnelledStreamId>(16);
 
     if api_key != "" {
-        tx.send(
-            Message::Message(
-                ClientMessage::AuthenticateRequest{ api_key },
-            )
-        ).await?;
+        tx.send(Message::Message(ClientMessage::AuthenticateRequest {
+            api_key,
+        }))
+        .await?;
     }
 
     for (i, _) in expose.iter().enumerate() {
-        tx.send(
-            Message::Message(
-                ClientMessage::ExposeRequest{
-                    kind: StreamKind::Tcp,
-                    local_id: i as u32,
-                },
-            )
-        ).await?;
+        tx.send(Message::Message(ClientMessage::ExposeRequest {
+            kind: StreamKind::Tcp,
+            local_id: i as u32,
+        }))
+        .await?;
     }
 
-    let mut tunnels =  HashMap::with_capacity(expose.len());
+    let mut tunnels = HashMap::with_capacity(expose.len());
 
     let cancel = CancellationToken::new();
 
@@ -334,12 +329,10 @@ async fn tcp_read_loop(
 
         let bytes = Vec::from(&buf[..n]);
 
-        let msg = Message::Message(
-            ClientMessage::Data{
-                id: readable.id(),
-                bytes,
-            },
-        );
+        let msg = Message::Message(ClientMessage::Data {
+            id: readable.id(),
+            bytes,
+        });
 
         tx.send(msg).await?
     }

@@ -9,7 +9,7 @@ pub trait Authenticator: Send + Sync {
 }
 
 pub struct SingleKeyAuthenticator {
-    api_key: String
+    api_key: String,
 }
 
 impl SingleKeyAuthenticator {
@@ -25,9 +25,9 @@ impl Authenticator for SingleKeyAuthenticator {
 
     fn authenticate(&self, api_key: String) -> Result<()> {
         if api_key != self.api_key {
-            return Err(Error::Unauthorized.into())
+            return Err(Error::Unauthorized.into());
         }
 
-        return Ok(())
+        return Ok(());
     }
 }

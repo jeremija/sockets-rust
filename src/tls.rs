@@ -1,4 +1,10 @@
-use std::{path::Path, io::{self, BufReader}, fs::File, task::{Context, Poll}, pin::Pin};
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    path::Path,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use rustls_pemfile::{certs, read_one, Item};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -23,7 +29,7 @@ pub fn load_server_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
             Item::RSAKey(key) => keys.push(PrivateKey(key)),
             Item::PKCS8Key(key) => keys.push(PrivateKey(key)),
             Item::ECKey(key) => keys.push(PrivateKey(key)),
-            _ => {}, // Ignore errors as certificate might be in the same file.
+            _ => {} // Ignore errors as certificate might be in the same file.
         }
     }
 
@@ -109,7 +115,7 @@ mod danger {
 #[cfg(feature = "insecure")]
 /// new_client_config returns a configuration with custom certificate verifier that will not
 /// validate server certificates.
-pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
+pub(crate) fn new_client_config() -> Option<rustls::ClientConfig> {
     use std::sync::Arc;
 
     use log::warn;
@@ -118,7 +124,7 @@ pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
 
     let config = rustls::ClientConfig::builder()
         .with_safe_defaults()
-        .with_custom_certificate_verifier(Arc::new(danger::NoCertificateVerification{}))
+        .with_custom_certificate_verifier(Arc::new(danger::NoCertificateVerification {}))
         .with_no_client_auth();
 
     Some(config)
@@ -126,6 +132,6 @@ pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
 
 #[cfg(not(feature = "insecure"))]
 /// new_client_config returns None to use the default configuration.
-pub (crate) fn new_client_config() -> Option<rustls::ClientConfig> {
+pub(crate) fn new_client_config() -> Option<rustls::ClientConfig> {
     None
 }

@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, env};
+use std::{env, net::SocketAddr};
 
 use anyhow::Result;
 use env_logger::Env;
@@ -26,11 +26,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    init(
-        api_key,
-        args.server_url,
-        args.expose,
-    ).await?;
+    init(api_key, args.server_url, args.expose).await?;
 
     Ok(())
 }

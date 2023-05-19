@@ -1,11 +1,21 @@
 use std::net::SocketAddr;
 
-use bytes::BufMut;
 use anyhow::Result;
-use tokio::{select, io::{AsyncReadExt, AsyncWriteExt}, net::{tcp::{OwnedWriteHalf, OwnedReadHalf}, TcpListener, TcpSocket, TcpStream}};
+use bytes::BufMut;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+        TcpListener, TcpSocket, TcpStream,
+    },
+    select,
+};
 use tokio_util::sync::CancellationToken;
 
-use crate::{message::{TunnelledStreamId, StreamId, TunnelId}, error::Error};
+use crate::{
+    error::Error,
+    message::{StreamId, TunnelId, TunnelledStreamId},
+};
 
 /// WritableStream wraps `OwnedWriteHalf`. It provides a `write_all` method, and does two extra
 /// things: it makes the `id` method available, and it allows a blocking write to be cancelled.
@@ -22,7 +32,7 @@ impl WritableStream {
     }
 
     pub fn id(&self) -> TunnelledStreamId {
-        return self.id
+        return self.id;
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -41,7 +51,6 @@ impl WritableStream {
     }
 }
 
-
 /// WritableStream wraps `OwnedReadHalf`. It provides a `read_buf` method, and does two extra
 /// things: it makes the `id` method available, and it allows a blocking read to be cancelled.
 #[derive(Debug)]
@@ -57,7 +66,7 @@ impl ReadableStream {
     }
 
     pub fn id(&self) -> TunnelledStreamId {
-        return self.id
+        return self.id;
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -69,7 +78,7 @@ impl ReadableStream {
         Self: Sized + Unpin,
         B: BufMut,
     {
-        select!{
+        select! {
             result = self.rx.read_buf(buf) => {
                 let n = result?;
                 Ok(n)
@@ -88,12 +97,12 @@ pub struct Listener {
 }
 
 impl Listener {
-    pub fn new(
-        tunnel_id: TunnelId,
-        listener: TcpListener,
-        cancel: CancellationToken,
-    ) -> Self {
-        Self { tunnel_id, listener, cancel }
+    pub fn new(tunnel_id: TunnelId, listener: TcpListener, cancel: CancellationToken) -> Self {
+        Self {
+            tunnel_id,
+            listener,
+            cancel,
+        }
     }
 
     pub async fn accept(&self) -> Result<(WritableStream, ReadableStream, SocketAddr)> {
@@ -105,7 +114,7 @@ impl Listener {
         let tunnel_id = self.tunnel_id;
         let stream_id = StreamId::rand();
 
-        let id = TunnelledStreamId{
+        let id = TunnelledStreamId {
             stream_id,
             tunnel_id,
         };
@@ -138,7 +147,7 @@ pub async fn dial(
         return Err(Error::InvalidSocketAddress.into());
     }
 
-    let tcp_stream = select!{
+    let tcp_stream = select! {
         res = socket.connect(addr) => res.map_err(Error::IOError),
         _ = cancel.cancelled() => Err(Error::Canceled.into()),
     };

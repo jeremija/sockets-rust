@@ -1,16 +1,33 @@
-use std::{sync::Arc, net::{SocketAddr, IpAddr}, collections::HashMap};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use bytes::BytesMut;
 use futures::stream::SplitSink;
-use tokio::{net::{TcpStream, TcpListener}, select};
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message as WSMessage};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
 use log::{error, info};
+use tokio::sync::mpsc;
+use tokio::{
+    net::{TcpListener, TcpStream},
+    select,
+};
+use tokio_tungstenite::{tungstenite::Message as WSMessage, WebSocketStream};
 use tokio_util::sync::CancellationToken;
 
-use crate::{message::{ClientMessage, ServerMessage, TunnelledStreamId, StreamKind, TunnelId, ExposeResponse, StreamSide}, protocol::{serialize, deserialize, Message}, auth::Authenticator, tcp::{WritableStream, ReadableStream, Listener}, error::Error, tls::MaybeTlsStream};
+use crate::{
+    auth::Authenticator,
+    error::Error,
+    message::{
+        ClientMessage, ExposeResponse, ServerMessage, StreamKind, StreamSide, TunnelId,
+        TunnelledStreamId,
+    },
+    protocol::{deserialize, serialize, Message},
+    tcp::{Listener, ReadableStream, WritableStream},
+    tls::MaybeTlsStream,
+};
 
 type Sender = mpsc::Sender<Message<ServerMessage>>;
 type Receiver = mpsc::Receiver<Message<ClientMessage>>;
@@ -36,7 +53,7 @@ pub async fn from_stream(
                 Ok(None) => return,
                 Err(err) => {
                     error!("receiving server message: {:?}", err);
-                    return
+                    return;
                 }
             }
         }
@@ -48,12 +65,11 @@ pub async fn from_stream(
                 Ok(()) => continue,
                 Err(err) => {
                     error!("sending client message: {:?}", err);
-                    return
+                    return;
                 }
             }
         }
     });
-
 
     Ok((server_msg_tx, client_msg_rx))
 }
@@ -70,7 +86,7 @@ async fn recv_client_message(
             tx.send(val).await?;
             Ok(Some(()))
         }
-        None => Ok(None)
+        None => Ok(None),
     }
 }
 
@@ -78,7 +94,7 @@ async fn recv_client_message(
 async fn send_server_message(
     tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WSMessage>,
     msg: Message<ServerMessage>,
-    ) -> Result<()> {
+) -> Result<()> {
     let msg = serialize(msg)?;
     tx.send(msg).await?;
     Ok(())
@@ -105,13 +121,12 @@ pub async fn handle_stream(
     // so we only remove an entry on a failed write. Need to figure out how to
     // do this properly.
 
-
     // pending_streams contains incoming connections for which we haven't received
     // NewStreamResponse from the client yet.
-    let mut pending_streams: HashMap<TunnelledStreamId, (WritableStream, ReadableStream)> = HashMap::new();
+    let mut pending_streams: HashMap<TunnelledStreamId, (WritableStream, ReadableStream)> =
+        HashMap::new();
     let mut writables: HashMap<TunnelledStreamId, WritableStream> = HashMap::new();
     let mut cancels: HashMap<TunnelledStreamId, CancellationToken> = HashMap::new();
-
 
     let auth_needed = authenticator.auth_needed();
     let mut authorized = false;
@@ -369,12 +384,7 @@ async fn tcp_read_loop(
 
         let bytes = Vec::from(&buf[..n]);
 
-        let msg = Message::Message(
-            ServerMessage::Data{
-                id,
-                bytes,
-            },
-        );
+        let msg = Message::Message(ServerMessage::Data { id, bytes });
 
         tx.send(msg).await?
     }
@@ -393,13 +403,27 @@ async fn accept_tcp(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::{SocketAddr, IpAddr, Ipv4Addr}, sync::Arc, str::FromStr};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        str::FromStr,
+        sync::Arc,
+    };
 
-    use tokio::{net::{TcpListener, TcpSocket}, io::{AsyncWriteExt, AsyncReadExt}};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpSocket},
+    };
     use tokio_util::sync::CancellationToken;
     use url::Url;
 
-    use crate::{auth::SingleKeyAuthenticator, server::handle_stream, tls::MaybeTlsStream, client::dial, protocol::Message, message::{ClientMessage, StreamKind, ServerMessage}};
+    use crate::{
+        auth::SingleKeyAuthenticator,
+        client::dial,
+        message::{ClientMessage, ServerMessage, StreamKind},
+        protocol::Message,
+        server::handle_stream,
+        tls::MaybeTlsStream,
+    };
 
     #[tokio::test]
     async fn start_server_connect_client_expose_tunnel() {
@@ -410,43 +434,20 @@ mod tests {
         //     .await
         //     .expect("failed to bind local listener");
 
-        let server_listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
-            .await
-            .expect("failed to bind server listener");
+        let server_listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
+                .await
+                .expect("failed to bind server listener");
 
-        let port = server_listener
-            .local_addr()
-            .expect("local addr")
-            .port();
+        let port = server_listener.local_addr().expect("local addr").port();
 
-        let server_url = Url::parse(format!("ws://127.0.0.1:{}", port).as_str())
-            .expect("parse url failed");
-
+        let server_url =
+            Url::parse(format!("ws://127.0.0.1:{}", port).as_str()).expect("parse url failed");
 
         let cancel = CancellationToken::new();
 
         let auth = Arc::new(SingleKeyAuthenticator::new("".to_string()));
 
-        // let local = tokio::spawn(async move {
-        //     let (stream, _addr) = local_listener.accept().await.expect("failed to accept");
-
-        //     let mut stream = MaybeTlsStream::Plain(stream);
-
-        //     let mut arr: [u8;5] = [0; 5];
-
-        //     stream.read_exact(&mut arr)
-        //         .await
-        //         .expect("expected to read five bytes");
-
-        //     assert_eq!("hello", std::str::from_utf8(&arr).expect("expected UTF-8"));
-
-        //     let b = "world".as_bytes();
-
-        //     stream.write_all(&b).await
-        //         .expect("writing world")
-        // });
-
-        println!("aaaaaaa");
         let cancel2 = cancel.clone();
 
         let server = tokio::spawn(async move {
@@ -463,16 +464,13 @@ mod tests {
             println!("hs done");
         });
 
-        let (sender, mut receiver) = dial(server_url)
-            .await
-            .expect("failed to dial server");
+        let (sender, mut receiver) = dial(server_url).await.expect("failed to dial server");
 
-        sender.send(Message::Message(
-            ClientMessage::ExposeRequest{
+        sender
+            .send(Message::Message(ClientMessage::ExposeRequest {
                 local_id: 0,
                 kind: StreamKind::Tcp,
-            },
-        ))
+            }))
             .await
             .expect("sending expose request");
 
@@ -480,7 +478,7 @@ mod tests {
 
         let res = match msg {
             Message::Message(ServerMessage::ExposeResponse(Ok(res))) => res,
-            msg => panic!("unexpected message: {:?}", msg)
+            msg => panic!("unexpected message: {:?}", msg),
         };
 
         println!("url: {}", res.url);
@@ -498,21 +496,23 @@ mod tests {
             .await
             .expect("connect");
 
-        socket.write_all(b"hello").await.expect("write socket failed");
+        socket
+            .write_all(b"hello")
+            .await
+            .expect("write socket failed");
 
         let msg = receiver.recv().await.expect("new stream request");
 
         let id = match msg {
             Message::Message(ServerMessage::NewStreamRequest(id)) => id,
-            msg => panic!("unexpected message: {:?}", msg)
+            msg => panic!("unexpected message: {:?}", msg),
         };
 
-        sender.send(Message::Message(
-            ClientMessage::NewStreamResponse{
+        sender
+            .send(Message::Message(ClientMessage::NewStreamResponse {
                 id,
                 result: Ok(()),
-            },
-        ))
+            }))
             .await
             .expect("sending new stream response");
 
@@ -520,15 +520,17 @@ mod tests {
 
         assert_eq!(
             msg,
-            Message::Message(ServerMessage::Data{id, bytes: b"hello".to_vec()}),
+            Message::Message(ServerMessage::Data {
+                id,
+                bytes: b"hello".to_vec()
+            }),
         );
 
-        sender.send(Message::Message(
-            ClientMessage::Data{
+        sender
+            .send(Message::Message(ClientMessage::Data {
                 id,
                 bytes: b"world".to_vec(),
-            },
-        ))
+            }))
             .await
             .expect("sending data");
 

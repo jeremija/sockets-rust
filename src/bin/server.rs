@@ -1,9 +1,19 @@
-use std::{net::{SocketAddr, IpAddr}, env, sync::Arc, path::PathBuf};
-use clap::{command, Parser};
 use anyhow::Result;
+use clap::{command, Parser};
 use env_logger::Env;
-use log::{info, error};
-use sockets::{server::handle_stream, auth::{Authenticator, SingleKeyAuthenticator}, tls::{load_server_certs, load_server_keys, MaybeTlsStream}, error::Error};
+use log::{error, info};
+use sockets::{
+    auth::{Authenticator, SingleKeyAuthenticator},
+    error::Error,
+    server::handle_stream,
+    tls::{load_server_certs, load_server_keys, MaybeTlsStream},
+};
+use std::{
+    env,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::net::TcpListener;
 use tokio_rustls::{rustls, TlsAcceptor};
 use tokio_util::sync::CancellationToken;
@@ -18,7 +28,7 @@ struct Args {
         long,
         help = "Bind args for webserver socket",
         default_value = "127.0.0.1:3000"
-    ) ]
+    )]
     listen_addr: SocketAddr,
 
     #[arg(
@@ -28,10 +38,16 @@ struct Args {
     )]
     adhoc_bind_addr: IpAddr,
 
-    #[arg(long, help = "TLS certificate file. Both cert and cert key need to be set for TLS to be enabled.")]
+    #[arg(
+        long,
+        help = "TLS certificate file. Both cert and cert key need to be set for TLS to be enabled."
+    )]
     cert: Option<PathBuf>,
 
-    #[arg(long, help = "TLS certificate key file. Both cert and cert key need to be set for TLS to be enabled.")]
+    #[arg(
+        long,
+        help = "TLS certificate key file. Both cert and cert key need to be set for TLS to be enabled."
+    )]
     cert_key: Option<PathBuf>,
 }
 
@@ -86,21 +102,28 @@ async fn main() -> Result<()> {
 
         tokio::spawn(async move {
             let maybe_tls_stream = match tls_acceptor {
-                Some(tls_acceptor) => {
-                    match tls_acceptor.accept(stream).await {
-                        Ok(stream) => MaybeTlsStream::RustlsServer(stream),
-                        Err(err) => {
-                            error!("failed to accept TLS connection from {}: {:?}", addr, err);
-                            return;
-                        }
+                Some(tls_acceptor) => match tls_acceptor.accept(stream).await {
+                    Ok(stream) => MaybeTlsStream::RustlsServer(stream),
+                    Err(err) => {
+                        error!("failed to accept TLS connection from {}: {:?}", addr, err);
+                        return;
                     }
-                }
+                },
                 None => MaybeTlsStream::Plain(stream),
             };
 
             let cancel2 = cancel.clone();
 
-            match handle_stream(cancel2, authenticator, maybe_tls_stream, addr, adhoc_bind_addr, hostname).await {
+            match handle_stream(
+                cancel2,
+                authenticator,
+                maybe_tls_stream,
+                addr,
+                adhoc_bind_addr,
+                hostname,
+            )
+            .await
+            {
                 Ok(()) => info!("stream done: {}", addr),
                 Err(err) => error!("handling stream: {}: {:?}", addr, err),
             }
